@@ -1,0 +1,120 @@
+#!/sbin/sh
+#
+# Universal BL/CP flasher by ALEXNDR (_alexndr @ XDA)
+#
+
+ZIPFILE=$3
+OUTFD=$2
+
+# ROM / MODEL properties
+BLVERSION=G960FXXU6CSGD
+CPVERSION=
+FLASHBL=true
+FLASHCP=false
+
+# Detect real $OUTFD
+readlink /proc/$$/fd/$OUTFD 2>/dev/null | grep /tmp >/dev/null
+if [ $? -eq 0 ] ; then
+    OUTFD=0
+    for FD in `ls /proc/$$/fd` ; do
+        readlink /proc/$$/fd/$FD 2>/dev/null | grep pipe >/dev/null
+        if [ $? -eq 0 ] ; then
+            ps | grep " 3 $FD " | grep -v grep >/dev/null
+            if [ $? -eq 0 ] ; then
+                OUTFD=$FD
+                break
+            fi
+        fi
+    done
+fi
+
+ui_print() {
+    echo -n -e "ui_print $1\n" >> /proc/self/fd/$OUTFD
+    echo -n -e "ui_print\n" >> /proc/self/fd/$OUTFD
+}
+
+resolve_link() {
+    if [ -z "$1" ] || [ ! -e $1 ] ; then return 1 ; fi
+    local VAR=$1
+    while [ -L $VAR ] ; do
+        VAR=$(readlink $VAR)
+    done
+    echo $VAR
+}
+
+unzip_flash() {
+    echo $2 | grep "\/dev\/block\/" >/dev/null || return 1
+    unzip -l "$ZIPFILE" | grep "$1" >/dev/null || return 1
+    if [ "$2" = "$MODEM" ] ; then
+        unzip -p "$ZIPFILE" $1 | cat - /dev/zero | dd bs=4096 of=$2 2>/dev/null
+    else
+        unzip -p "$ZIPFILE" $1 | dd bs=4096 of=$2 2>/dev/null || return 1
+    fi
+    return 0
+}
+
+# Flashing BL/CP works only on Exynos platforms
+echo "$(getprop ro.board.platform) $(getprop ro.boot.hardware) $(getprop ro.hardware)" | grep -i "exynos" >/dev/null && FLASHBLCP=true || FLASHBLCP=false
+
+# Check device
+BLPREFIX=$(echo $BLVERSION | cut -c-5)
+echo "$(getprop ro.boot.bootloader) $(getprop ro.bootloader)" | grep "^$BLPREFIX" >/dev/null || FLASHBLCP=false
+
+# Check selective installation
+ZIPDIR="$(dirname "$ZIPFILE")//"
+ZIPNAME=$(echo "$ZIPFILE" | cut -c${#ZIPDIR}-)
+echo "$ZIPNAME" | grep "^BL_" | grep -v "_CP_" >/dev/null && FLASHCP=false
+echo "$ZIPNAME" | grep "^CP_" | grep -v "_BL_" >/dev/null && FLASHBL=false
+
+ui_print " "
+ui_print "BL/CP flasher by ALEXNDR (_alexndr @ XDA)"
+ui_print " "
+
+if ($FLASHBLCP) ; then
+    UPPAR=$(resolve_link $(find /dev/block/platform -type l -iname up_param)) # may not exist
+    KEYST=$(resolve_link $(find /dev/block/platform -type l -iname keystorage)) # may not exist
+    CPDEB=$(resolve_link $(find /dev/block/platform -type l -iname cp_debug)) # may not exist
+    MODEM=$(resolve_link $(find /dev/block/platform -type l -iname radio)) || FLASHBLCP=false
+    PARAM=$(resolve_link $(find /dev/block/platform -type l -iname param)) || FLASHBLCP=false
+    BLPRI=$(resolve_link $(find /dev/block/platform -type l -iname bota0)) || FLASHBLCP=false
+    BLSEC=$(resolve_link $(find /dev/block/platform -type l -iname bota1)) || FLASHBLCP=false
+else
+    ui_print "This is not $BLPREFIX device, aborting!"
+    ui_print " "
+    exit 1
+fi
+
+if (! $FLASHBLCP) ; then
+    ui_print "Partition(s) detection went wrong, aborting!"
+    ui_print " "
+    exit 1
+fi
+
+if ($FLASHBL) ; then
+    ui_print "Flashing $BLVERSION bootloader..."
+    unzip_flash ALEXNDR/images/param.bin $PARAM # optional
+    unzip_flash ALEXNDR/images/up_param.bin $UPPAR # may not exist
+    unzip_flash ALEXNDR/images/keystorage.bin $KEYST # may not exist
+    unzip_flash ALEXNDR/images/sboot.bin $BLPRI || ui_print "Failed to flash sboot.bin -> $BLPRI"
+    unzip_flash ALEXNDR/images/cm.bin $BLSEC || ui_print "Failed to flash cm.bin -> $BLSEC"
+fi
+
+if ($FLASHCP) ; then
+    ui_print "Flashing $CPVERSION modem..."
+    unzip_flash ALEXNDR/images/modem_debug.bin $CPDEB # may not exist
+    unzip_flash ALEXNDR/images/modem.bin $MODEM || ui_print "Failed to flash modem.bin -> $MODEM"
+fi
+
+sync
+sleep 2
+
+if ($FLASHBL) ; then
+    ui_print " "
+    ui_print "Done! Rebooting..."
+    sleep 3
+    reboot fota_bl
+else
+    ui_print " "
+    ui_print "Done!"
+    ui_print " "
+fi
