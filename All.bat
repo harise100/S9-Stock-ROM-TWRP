@@ -11,6 +11,7 @@ echo Extracting your tar.md5 images
 .\bin\7z x .\SOURCE\BL_*.md5 -o.\SOURCE\ -y
 .\bin\7z x .\SOURCE\CP_*.md5 -o.\SOURCE\ -y
 .\bin\7z x .\SOURCE\CSC_*.md5 -o.\SOURCE\ -y
+del /S /Q .\SOURCE\*.md5
 echo Extracting all images with .lz4 extension
 echo ROM Files
 .\bin\lz4.exe -d .\SOURCE\system.img.lz4 .\SOURCE\system.img.simg
@@ -26,6 +27,7 @@ echo BL Files
 .\bin\lz4.exe -d .\SOURCE\param.bin.lz4 .\SOURCE\param.bin
 .\bin\lz4.exe -d .\SOURCE\sboot.bin.lz4 .\SOURCE\sboot.bin
 .\bin\lz4.exe -d .\SOURCE\up_param.bin.lz4 .\SOURCE\up_param.bin
+del /S /Q .\SOURCE\*.lz4
 echo Extraction done
 
 echo Extracting simg to img
@@ -33,7 +35,7 @@ echo Extracting simg to img
 .\bin\simg2img.exe ./SOURCE/vendor.img.simg ./SOURCE/vendor.img
 .\bin\simg2img.exe ./SOURCE/dqmdbg.img.simg ./SOURCE/dqmdbg.img
 .\bin\simg2img.exe ./SOURCE/odm.img.simg ./SOURCE/odm.img
-
+del /S /Q .\SOURCE\*.simg
 echo Building csc/odm contents
 .\bin\7z x .\SOURCE\odm.img -o.\SOURCE\odm -y
 .\bin\OmcTextDecoder d .\SOURCE\odm
