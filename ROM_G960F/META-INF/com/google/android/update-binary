@@ -1,0 +1,943 @@
+#!/sbin/sh
+#
+# DevBase unified installation script designed for Samsung devices
+# by ALEXNDR (_alexndr @ XDA)
+#
+
+ZIPFILE=$3
+OUTFD=$2
+
+# ROM properties
+NAME=ALEXNDR
+ROMNAME=DevBase
+VERSION=v6.0
+BASEVERSION=G960FXXU6CSG8
+
+# Detect real $OUTFD
+readlink /proc/$$/fd/$OUTFD 2>/dev/null | grep /tmp >/dev/null
+if [ $? -eq 0 ] ; then
+    OUTFD=0
+    for FD in `ls /proc/$$/fd` ; do
+        readlink /proc/$$/fd/$FD 2>/dev/null | grep pipe >/dev/null
+        if [ $? -eq 0 ] ; then
+            ps | grep " 3 $FD " | grep -v grep >/dev/null
+            if [ $? -eq 0 ] ; then
+                OUTFD=$FD
+                break
+            fi
+        fi
+    done
+fi
+
+echo_log() {
+    # use Windows (CR/LF) text format in log file
+    echo -n -e "$1\r\n" >> /tmp/devbase_install.log
+}
+
+ui_print() {
+    echo -n -e "ui_print $1\n" >> /proc/self/fd/$OUTFD
+    echo -n -e "ui_print\n" >> /proc/self/fd/$OUTFD
+    echo_log "ui_print: $1"
+}
+
+abort() {
+    (is_mounted /data) && cp -f /tmp/devbase_install.log /data || cp -f /tmp/devbase_install.log /cache
+    rm -Rf /tmp/*
+    exit 1
+}
+
+resolve_link() {
+    if [ -z "$1" ] || [ ! -e $1 ] ; then return 1 ; fi
+    local VAR=$1
+    while [ -L $VAR ] ; do
+        VAR=$(readlink $VAR)
+    done
+    echo $VAR
+}
+
+get_prop() {
+    local FILE=/system/build.prop
+    if [ ! -z "$2" ] ; then FILE=$2 ; fi
+    if [ -z "$1" ] || [ ! -f $FILE ] ; then return 1 ; fi
+    cat $FILE 2>/dev/null | grep "$1=" >/dev/null || return 1
+    echo $(cat $FILE | grep "$1=" | cut -d'=' -f2 | tr -d '\r')
+}
+
+set_prop() {
+    local FILE=/system/build.prop
+    if [ ! -z "$3" ] ; then FILE=$3 ; fi
+    if [ ! -f $FILE ] ; then return 1 ; fi
+    if [ ! -z "$(cat $FILE | grep "^$1=")" ] ; then
+        sed -i "$(sed -n "/^$1=/=" $FILE) c$1=$2" $FILE
+    else
+        echo "$1=$2" >> $FILE
+    fi
+}
+
+is_mounted() {
+    if [ -z "$2" ] ; then
+        cat /proc/mounts | grep "$1" >/dev/null
+    else
+        cat /proc/mounts | grep "$1" | grep "$2," >/dev/null
+    fi
+    return $?
+}
+
+unzip_dir() {
+    if ($UNZIP) ; then
+        unzip -l "$ZIPFILE" | grep "$1" >/dev/null || return 1
+        unzip -o "$ZIPFILE" $1/* -d $2
+    else
+        /tmp/7za l "$ZIPFILE" | grep "$1" >/dev/null || return 1
+        /tmp/7za x "$ZIPFILE" $1 -o$2
+    fi
+    return $?
+}
+
+unzip_file() {
+    if ($UNZIP) ; then
+        unzip -l "$ZIPFILE" | grep "$1" >/dev/null || return 1
+        unzip -p "$ZIPFILE" $1 > $2
+    else
+        /tmp/7za l "$ZIPFILE" | grep "$1" >/dev/null || return 1
+        /tmp/7za e -so "$ZIPFILE" $1 > $2
+    fi
+    return $?
+}
+
+unzip_flash() {
+    local WIPE=false
+    echo $2 | grep "/dev/block/" >/dev/null || return 1
+    if [ "$2" = "$BOOT" ] || [ "$2" = "$RECOVERY" ] || [ "$2" = "$MODEM" ] ; then WIPE=true ; fi
+    if ($UNZIP) ; then
+        unzip -l "$ZIPFILE" | grep "$1" >/dev/null || return 1
+        if ($WIPE) ; then
+            unzip -p "$ZIPFILE" $1 | cat - /dev/zero | dd bs=4096 of=$2 2>/dev/null
+        else
+            unzip -p "$ZIPFILE" $1 | dd bs=4096 of=$2 2>/dev/null || return 1
+        fi
+    else
+        /tmp/7za l "$ZIPFILE" | grep "$1" >/dev/null || return 1
+        if ($WIPE) ; then
+            /tmp/7za e -so "$ZIPFILE" $1 | cat - /dev/zero | dd bs=4096 of=$2 2>/dev/null
+        else
+            /tmp/7za e -so "$ZIPFILE" $1 | dd bs=4096 of=$2 2>/dev/null || return 1
+        fi
+    fi
+    return 0
+}
+
+unzip_install() {
+    echo $1 | grep "\.zip$" >/dev/null || return 1
+    unzip_file $1 /tmp/installer.zip || return 1
+    echo_log "unzip_install: Installing $1"
+    unzip -p /tmp/installer.zip META-INF/com/google/android/update-binary > /tmp/update-binary || return 1
+    chmod 755 /tmp/update-binary
+    /tmp/update-binary 3 1 /tmp/installer.zip
+    return $?
+}
+
+efs_backup() {
+    local FILE=efs_backup
+    for DST in $EXTSDCARD /usb-otg /usbstorage /sdcard ; do
+        # prefer $EXTSDCARD or removable storage
+        (! is_mounted $DST) && mount $DST
+        if (is_mounted $DST) ; then
+            TARGET=$DST/.backup/efs
+            break
+        fi
+    done
+    if [ -z "$TARGET" ] ; then return 1 ; fi
+    if (is_mounted /efs) ; then
+        sync
+        umount /efs || return 1
+    fi
+    dd bs=4096 if=$EFS of=/tmp/efs.img 2>/dev/null || return 1
+    mkdir -p $TARGET
+    ls $TARGET/efs_backup.img* >/dev/null 2>&1 && FILE=efs_recent
+    gzip -c /tmp/efs.img > $TARGET/$FILE.img.gz || return 1
+    # use Windows (CR/LF) text format in $TARGET/$FILE.txt
+    echo -n -e "MD5(img.gz): $(md5sum $TARGET/$FILE.img.gz | cut -d' ' -f1)\r\n" > $TARGET/$FILE.txt
+    echo -n -e "ROM: $DESC\r\n" >> $TARGET/$FILE.txt
+    echo -n -e "Created: $(date)\r\n" >> $TARGET/$FILE.txt
+    echo -n -e "EFS restore command (TWRP -> Advanced -> Terminal):\r\n" >> $TARGET/$FILE.txt
+    echo -n -e "gunzip -c $TARGET/$FILE.img.gz | dd bs=4096 of=$EFS\r\n" >> $TARGET/$FILE.txt
+    rm -f /tmp/efs.img
+}
+
+detect_csc() {
+    if [ -z "$1" ] || [ ! -f $1 ] ; then return 3 ; fi
+    ERR_CSC=BTU
+    local NV_OMC=
+    local NV_MPS=
+    local FW_CSC=
+    if [ ! -z "$2" ] ; then ERR_CSC=$2 ; fi
+    if (! is_mounted /efs) ; then
+        mkdir -p /efs
+        mount -t ext4 -o ro $EFS /efs || return 3
+    fi
+    NV_OMC=$(cat /efs/imei/omcnw_code.dat) && echo_log "detect_csc: omcnw_code: $NV_OMC"
+    NV_MPS=$(cat /efs/imei/mps_code.dat) && echo_log "detect_csc: mps_code: $NV_MPS"
+    umount /efs
+    if [ ! -z "$NV_OMC" ] ; then
+        if [ ! -z "$(cat $1 | grep "/$NV_OMC/")" ] ; then
+            CSC=$NV_OMC
+        elif [ ! -d /system/omc ] && [ ! -d /odm/omc ] ; then
+            return 2
+        fi
+    elif [ ! -z "$NV_MPS" ] ; then
+        FW_CSC=$(cat /system/csc/sales_code.dat)
+        if [ ! -z "$(cat $1 | grep "/$NV_MPS/")" ] ; then
+            CSC=$NV_MPS
+        elif [ ! -z "$FW_CSC" ] && [ ! -z "$(cat $1 | grep "/$FW_CSC/")" ] ; then
+            CSC=$FW_CSC
+        elif [ ! -d /system/csc ] ; then
+            CSC=$ERR_CSC
+            return 1
+        fi
+    else
+        return 3
+    fi
+    echo_log "detect_csc: returned value: $CSC"
+}
+
+detect_cscpath() {
+    local NV_CSC=
+    local OMC=/odm/omc
+    if [ ! -d $OMC ] ; then OMC=/system/omc ; fi
+    if [ -d $OMC ] ; then
+        if (! is_mounted /efs) ; then
+            mkdir -p /efs
+            mount -t ext4 -o ro $EFS /efs || return 1
+        fi
+        if [ -f /efs/imei/omcnw_code.dat ] ; then
+            NV_CSC=$(cat /efs/imei/omcnw_code.dat)
+        elif [ -f /efs/imei/mps_code.dat ] ; then
+            NV_CSC=$(cat /efs/imei/mps_code.dat)
+        else
+            return 1
+        fi
+        umount /efs
+        CSCPATH=$OMC/$(cat $OMC/sales_code_list.dat | grep "$NV_CSC") || return 1
+    elif [ -d /system/csc ] ; then
+        CSCPATH=/system/csc
+    else
+        return 1
+    fi
+    echo_log "detect_cscpath: returned value: $CSCPATH"
+}
+
+set_csc() {
+    local LAST=
+    local NV_MPS=
+    local NV_OMC=
+    local NV_OMC2=
+    local ODMSIZE=
+    local ODMCON=system_file
+    local OMC=/odm/omc
+    if [ -z "$1" ] ; then return 1 ; fi
+    if [ -z "$ODM" ] ; then OMC=/system/omc ; fi
+    if [ ! -z "$2" ] ; then
+        chown -R 0:0 $2
+        chmod -R 644 $2
+        chmod -R +X $2
+    fi
+    if [ -d $2$OMC ] ; then
+        # modify /efs only if there is no other way
+        if (! is_mounted /efs) ; then
+            mkdir -p /efs
+            mount -t ext4 $EFS /efs || return 3
+        elif (! is_mounted /efs rw) ; then
+            mount -o rw,remount /efs || return 3
+        fi
+        NV_MPS=$(cat /efs/imei/mps_code.dat)
+        NV_OMC=$(cat /efs/imei/omcnw_code.dat)
+        NV_OMC2=$(cat /efs/imei/omcnw_code2.dat)
+        if [ ! -z "$NV_MPS" ] && [ "$NV_MPS" != "$1" ] ; then
+            sed -i "s/$NV_MPS/$1/g" /efs/imei/mps_code.dat
+            cat /efs/imei/prodcode.dat 2>/dev/null | grep "$NV_MPS$" >/dev/null && sed -i "s/$NV_MPS$/$1/g" /efs/imei/prodcode.dat
+        fi
+        if [ ! -z "$NV_OMC" ] && [ "$NV_OMC" != "$1" ] ; then
+            sed -i "s/$NV_OMC/$1/g" /efs/imei/omcnw_code.dat
+            cat /efs/imei/prodcode.dat 2>/dev/null | grep "$NV_OMC$" >/dev/null && sed -i "s/$NV_OMC$/$1/g" /efs/imei/prodcode.dat
+        fi
+        if [ ! -z "$NV_OMC2" ] && [ "$NV_OMC2" != "$1" ] ; then
+            sed -i "s/$NV_OMC2/$1/g" /efs/imei/omcnw_code2.dat
+            cat /efs/imei/prodcode.dat 2>/dev/null | grep "$NV_OMC2$" >/dev/null && sed -i "s/$NV_OMC2$/$1/g" /efs/imei/prodcode.dat
+        fi
+        sync
+        umount /efs
+        if [ ! -z "$2" ] ; then
+            if [ ! -z "$ODM" ] ; then
+                umount /odm
+                (is_mounted /odm) && echo_log "set_csc: can't umount /odm"
+                dd bs=4096 if=$ODM of=/tmp/odm.img || echo_log "set_csc: no space left on device"
+                chown 0:0 /tmp/odm.img
+                for item in `ls -l /tmp/odm.img` ; do
+                    if [ "$LAST" = "root" ] && [ "$item" != "root" ] ; then
+                        ODMSIZE=$item
+                        break
+                    fi
+                    LAST=$item
+                done
+                rm -f /tmp/odm.img
+                echo_log "set_csc: odm_size: $ODMSIZE"
+                if [ $(get_prop ro.build.version.sdk) -ge 28 ] ; then ODMCON=vendor_file ; fi
+                echo_log "set_csc: odm_con: u:object_r:$ODMCON:s0"
+                echo "/odm(/.*)? u:object_r:$ODMCON:s0" > /tmp/file_contexts_image
+                make_ext4fs -l $ODMSIZE -a /odm -S /tmp/file_contexts_image $ODM 2>> /tmp/devbase_install.log
+                mount /odm
+                (! is_mounted /odm) && mount -t ext4 $ODM /odm
+                (! is_mounted /odm) && echo_log "set_csc: can't mount /odm"
+                chmod 600 $2/odm/build.prop
+                cp -af $2/odm/* /odm || return 2
+                chcon -Rv u:object_r:$ODMCON:s0 /odm/* >/dev/null # -Rv to prevent busybox's chcon bug
+                if [ "$ODMCON" = "vendor_file" ] ; then
+                    chcon -Rv u:object_r:omc_vendor_file:s0 /odm/omc >/dev/null
+                    chcon -Rv u:object_r:vendor_configs_file:s0 /odm/etc >/dev/null
+                    chcon -Rv u:object_r:vendor_app_file:s0 /odm/*app >/dev/null
+                fi
+            else
+                mkdir -p $OMC
+                chown 0:0 $OMC
+                chmod 751 $OMC
+                cp -af $2$OMC/* $OMC || return 2
+            fi
+            rm -Rf $2
+        fi
+        # cosmetic action, the file below does not really matter
+        echo $1 > $OMC/sales_code.dat
+    elif [ -d $2/system/csc ] ; then
+        if [ ! -z "$2" ] ; then
+            cp -af $2/system/* /system || return 2
+            rm -Rf $2
+        fi
+        cp -af /system/csc/common/system/* /system
+        cp -af /system/csc/$1/system/* /system
+        ln -sf /system/csc/$1/csc_contents /system/csc_contents
+    else
+        return 1
+    fi
+    return 0
+}
+
+kcsc_backup() {
+    if [ -z "$1" ] ; then return 1 ; fi
+    if [ -d /odm/omc ] ; then
+        # CSC is placed in /odm partition
+        return 0
+    elif [ -d /system/omc ] ; then
+        mkdir -p $1/system
+        cp -Rf /system/omc $1/system
+    elif [ -d /system/csc ] ; then
+        mkdir -p $1/system/etc
+        mkdir -p $1/system/priv-app
+        mkdir -p $1$SYSLIB
+        cp -Rf /system/csc $1/system
+        cp -Rf /system/T9DB $1/system
+        cp -Rf /system/VODB $1/system
+        cp -Rf /system/HWRDB $1/system
+        cp -Rf /system/sipdb $1/system
+        cp -Rf /system/finder_cp $1/system
+        cp -Rf /system/wallpaper $1/system
+        cp -Rf /system/priv-app/IPsecService $1/system/priv-app
+        cp -f /system/CSCVersion.txt $1/system
+        cp -f /system/SW_Configuration.xml $1/system
+        cp -f /system/etc/csc_*.txt $1/system/etc
+        cp -f /system/etc/enforce*.txt $1/system/etc
+        cp -f /system/etc/hidden_*.txt $1/system/etc
+        cp -f /system/etc/*_keystrings.dat $1/system/etc
+        cp -f /system/etc/lteon_netlist.xml $1/system/etc
+        cp -f /system/etc/plmn_delta.bin $1/system/etc
+        cp -f $SYSLIB/libjni_ipsecservice.so $1$SYSLIB
+        if [ -L /system/csc_contents ] ; then
+            readlink /system/csc_contents > $1/csc_contents
+        fi
+    else
+        return 1
+    fi
+    return 0
+}
+
+kcsc_restore() {
+    if [ -d /odm/omc ] ; then return 0 ; fi
+    if [ -z "$1" ] || [ ! -d $1 ] ; then return 1 ; fi
+    chown -R 0:0 $1/system
+    chmod -R 644 $1/system
+    chmod -R +X $1/system
+    chmod 751 $1/system/omc 2>/dev/null
+    cp -af $1/system/* /system
+    if [ -f $1/csc_contents ] ; then
+        ln -sf $(cat $1/csc_contents) /system/csc_contents
+    fi
+    rm -Rf $1
+    return 0
+}
+
+mod_csc() {
+    local FILE=
+    local OPTFILE=/tmp/options.prop
+    if [ ! -z "$1" ] ; then OPTFILE=$1 ; fi
+    if [ ! -f $OPTFILE ] ; then return 1 ; fi
+    if [ -f $CSCPATH/conf/cscfeature.xml ] ; then
+        FILE=$CSCPATH/conf/cscfeature.xml
+    elif [ -f $CSCPATH/cscfeature.xml ] ; then
+        FILE=$CSCPATH/cscfeature.xml
+    elif [ -f $CSCPATH/feature.xml ] ; then
+        FILE=$CSCPATH/feature.xml
+    elif [ -f $CSCPATH/others.xml ] ; then
+        FILE=$CSCPATH/others.xml
+    fi
+    if [ -z "$FILE" ] ; then return 1 ; fi
+    local FILECON=$(ls -Z $FILE 2>/dev/null | grep "u:object_r" | cut -d: -f3)
+    echo_log "mod_csc: file_con: u:object_r:$FILECON:s0"
+    if [ -f $FILE.bak ] ; then mv -f $FILE.bak $FILE ; fi
+    mkdir -p /tmp/mod_csc$CSCPATH/conf
+    cat $FILE | grep "SamsungMobileFea" >/dev/null || return 2
+    cat $FILE | tr '\r' '\n' | sed '/^$/d' > /tmp/mod_csc$FILE
+    for LINE in `cat $OPTFILE | tr '\r' '\n' | sed '/^$/d' | grep -v "^#" | grep "<CscFeature_" | grep "</CscFeature_"` ; do
+        sed -i "/$(echo $LINE | cut -d'>' -f1)/d" /tmp/mod_csc$FILE
+        sed -i "/<FeatureSet>/ a\    $LINE" /tmp/mod_csc$FILE
+        echo_log "mod_csc: new line in $FILE: $LINE"
+    done
+    mv -f $FILE $FILE.bak
+    cp -f /tmp/mod_csc$FILE $FILE
+    chown 0:0 $FILE
+    chmod 644 $FILE
+    chcon u:object_r:$FILECON:s0 $FILE
+    rm -Rf /tmp/mod_csc
+    return 0
+}
+
+physical_debloat() {
+    local OPTFILE=/tmp/options.prop
+    if [ ! -z "$1" ] ; then OPTFILE=$1 ; fi
+    if [ ! -f $OPTFILE ] ; then return 1 ; fi
+    rm -Rf /system/*app/SecurityLogAgent /system/*app/Rlc # just in case
+    for APK in `cat $OPTFILE | tr '\r' '\n' | sed '/^$/d' | grep -v "^#" | grep "^/system/"` ; do
+        echo "$APK" | grep "app/" >/dev/null || echo "$APK" | grep "/container" >/dev/null || echo "$APK" | grep "/preload" >/dev/null
+        if [ $? -eq 0 ] ; then rm -Rf $APK ; echo_log "physical_debloat: removed content: $APK" ; fi
+    done
+    return 0
+}
+
+virtual_debloat() {
+    local QTY=0
+    local FILE=
+    local FILECON=
+    local WORKDIR=
+    local OPTFILE=/tmp/options.prop
+    if [ ! -z "$1" ] ; then OPTFILE=$1 ; fi
+    if [ ! -f $OPTFILE ] ; then return 1 ; fi
+    for DIR in $CSCPATH/etc /system/csc_contents /system/etc ; do
+        if [ -f $DIR/enforceskippingpackages.txt ] ; then
+            FILE=$DIR/enforceskippingpackages.txt
+            WORKDIR=/tmp/virtual_debloat$DIR
+            break
+        fi
+    done
+    if [ -z "$FILE" ] ; then
+        FILE=/system/etc/enforceskippingpackages.txt
+        WORKDIR=/tmp/virtual_debloat/system/etc
+    else
+        FILECON=$(ls -Z $FILE 2>/dev/null | grep "u:object_r" | cut -d: -f3)
+        echo_log "virtual_debloat: file_con: u:object_r:$FILECON:s0"
+    fi
+    if [ -f $FILE.bak ] ; then mv -f $FILE.bak $FILE ; fi
+    mkdir -p $WORKDIR
+    if [ ! -f $FILE ] ; then
+        touch $WORKDIR/enforceskippingpackages.tmp
+    else
+        for APK in `cat $FILE | tr '\r' '\n' | sed '/^$/d' | grep "\.apk$"` ; do
+            echo "$APK" >> $WORKDIR/enforceskippingpackages.tmp
+            QTY=$((QTY+1))
+        done
+    fi
+    for APK in `cat $OPTFILE | tr '\r' '\n' | sed '/^$/d' | grep -v "^#" | grep "\.apk$"` ; do
+        if [ ! -z "$(find /system/*app -name $APK)" ] ; then
+            cat $WORKDIR/enforceskippingpackages.tmp | grep "$APK" >/dev/null
+            if [ $? -ne 0 ] ; then
+                echo "$APK" >> $WORKDIR/enforceskippingpackages.tmp
+                echo_log "virtual_debloat: new line in $FILE: $APK"
+                QTY=$((QTY+1))
+            fi
+        fi
+    done
+    for CSCAPKFILE in /odm/omc_apks_list.txt /odm/omc/omc_apks_list.txt /system/omc/common_app/omc_apks_list.txt /system/etc/csc_apks_list.txt /system/etc/csc_user_apks_list.txt ; do
+        if [ -f $CSCAPKFILE ] ; then
+            for APK in `cat $CSCAPKFILE | tr '\r' '\n' | sed '/^$/d' | cut -d'/' -f5` ; do
+                echo "$APK" >> $WORKDIR/enforceskippingpackages.tmp
+                QTY=$((QTY+1))
+            done
+        fi
+    done
+    echo "$QTY" > $WORKDIR/enforceskippingpackages.txt
+    cat $WORKDIR/enforceskippingpackages.tmp >> $WORKDIR/enforceskippingpackages.txt
+    mv -f $FILE $FILE.bak
+    cp -f $WORKDIR/enforceskippingpackages.txt $FILE
+    chown 0:0 $FILE
+    chmod 644 $FILE
+    if [ ! -z "$FILECON" ] ; then chcon u:object_r:$FILECON:s0 $FILE ; fi
+    rm -Rf /tmp/virtual_debloat
+    return 0
+}
+
+rmm_patcher() {
+    rm -Rf /system/*app/Rlc /system/bin/vaultkeeper*
+    cat /system/build.prop /vendor/build.prop 2>/dev/null | grep "vaultkeeper\.feature" >/dev/null || return 1
+    sed -i "s/vaultkeeper\.feature=1/vaultkeeper\.feature=0/g" /system/build.prop
+    sed -i "s/vaultkeeper\.feature=1/vaultkeeper\.feature=0/g" /vendor/build.prop 2>/dev/null
+    return 0
+}
+
+# Ensure empty /tmp
+rm -Rf /tmp/* /tmp/.*
+
+######## START LOGGING ENTIRE PROCESS #########
+
+echo_log "##### Installation log file #####"
+echo_log "Created by: $BASEVERSION $ROMNAME installer $VERSION"
+echo_log "Date: $(date)"
+echo_log " "
+echo_log "ZIPFILE: $ZIPFILE"
+echo_log " "
+
+########### PREPARE TO INSTALLATION ###########
+
+# Test if we can use "unzip" command for all files inside "$ZIPFILE" (without "unzip: short read" issue)
+unzip -l "$ZIPFILE" >/dev/null 2>&1 && UNZIP=true || UNZIP=false
+($UNZIP) || unzip -p "$ZIPFILE" $NAME/bin/7za > /tmp/7za
+($UNZIP) || chmod 755 /tmp/7za
+($UNZIP) && echo_log "Binary used to unpack: unzip (busybox)" || echo_log "Binary used to unpack: 7za"
+echo_log " "
+
+# Common partitions/blocks (auto-detection)
+echo_log "Detected common partitions/blocks:"
+BOOT=$(resolve_link $(find /dev/block/platform -type l -iname boot)) && echo_log "BOOT=$BOOT" || ui_print "Failed! BOOT block not found..."
+DATA=$(resolve_link $(find /dev/block/platform -type l -iname userdata)) && echo_log "DATA=$DATA" || ui_print "Failed! DATA block not found..."
+CACHE=$(resolve_link $(find /dev/block/platform -type l -iname cache)) && echo_log "CACHE=$CACHE" || ui_print "Failed! CACHE block not found..."
+SYSTEM=$(resolve_link $(find /dev/block/platform -type l -iname system)) && echo_log "SYSTEM=$SYSTEM" || ui_print "Failed! SYSTEM block not found..."
+RECOVERY=$(resolve_link $(find /dev/block/platform -type l -iname recovery)) && echo_log "RECOVERY=$RECOVERY" || ui_print "Failed! RECOVERY block not found..."
+EFS=$(resolve_link $(find /dev/block/platform -type l -iname efs)) && echo_log "EFS=$EFS" || ui_print "Failed! EFS block not found..."
+DQMDBG=$(resolve_link $(find /dev/block/platform -type l -iname dqmdbg)) && echo_log "DQMDBG=$DQMDBG" # may not exist
+VENDOR=$(resolve_link $(find /dev/block/platform -type l -iname vendor)) && echo_log "VENDOR=$VENDOR" # may not exist
+ODM=$(resolve_link $(find /dev/block/platform -type l -iname odm)) && echo_log "ODM=$ODM" # may not exist
+echo_log " "
+
+if [ -z "$BOOT" ] || [ -z "$DATA" ] || [ -z "$CACHE" ] || [ -z "$SYSTEM" ] || [ -z "$RECOVERY" ] || [ -z "$EFS" ] ; then
+    ui_print "Installation aborted, no changes have been made!"
+    ui_print " "
+    abort
+fi
+
+# Flashing CP (baseband/modem) works only on Exynos platforms
+echo "$(getprop ro.board.platform) $(getprop ro.boot.hardware) $(getprop ro.hardware)" | grep -i "exynos" >/dev/null && FLASHCP=true || FLASHCP=false
+echo "$(getprop ro.product.cpu.abilist) $(getprop ro.product.cpu.abi)" | grep "64" >/dev/null && SYSLIB=/system/lib64 || SYSLIB=/system/lib
+
+if ($FLASHCP) ; then
+    echo_log "Detected CP (baseband/modem) related blocks:"
+    MODEM=$(resolve_link $(find /dev/block/platform -type l -iname radio)) && echo_log "MODEM=$MODEM" || FLASHCP=false
+    CPDEB=$(resolve_link $(find /dev/block/platform -type l -iname cp_debug)) && echo_log "CPDEB=$CPDEB" # may not exist
+    echo_log " "
+fi
+
+# Mount necessary partitions
+(! is_mounted /cache) && mount /cache
+(! is_mounted /cache rw) && mount -o rw,remount /cache
+(! is_mounted /cache) && mount -t ext4 $CACHE /cache
+(! is_mounted /system) && mount -o ro /system
+(! is_mounted /system) && mount -t ext4 -o ro $SYSTEM /system
+(! is_mounted /system) && mount -t f2fs -o ro $SYSTEM /system
+if [ ! -z "$VENDOR" ] ; then mkdir -p /vendor ; fi
+if [ ! -z "$ODM" ] ; then
+    mkdir -p /odm # just in case
+    (! is_mounted /odm) && mount /odm
+    (! is_mounted /odm rw) && mount -o rw,remount /odm
+    (! is_mounted /odm) && mount -t ext4 $ODM /odm
+fi
+(! is_mounted /data) && mount /data
+(! is_mounted /data rw) && mount -o rw,remount /data
+(! is_mounted /data) && mount -t ext4 $DATA /data
+if (is_mounted /data) ; then
+    if [ ! -e /data/data ] ; then
+        echo_log "NOTE: /data partition has been WIPED"
+    fi
+else
+    echo_log "NOTE: /data partition is ENCRYPTED"
+fi
+
+# Extract default options.prop file
+unzip_file options.prop /tmp/options.prop
+
+# Use custom options.prop file if exists
+EXTSDCARD=$(find /storage /mnt/media_rw -maxdepth 1 2>/dev/null | grep -m 1 "/[0-9A-F][0-9A-F][0-9A-F][0-9A-F]-[0-9A-F][0-9A-F][0-9A-F][0-9A-F]$") ||
+EXTSDCARD=/external_sd
+cp -f /sdcard/options.prop /tmp 2>/dev/null && echo_log "Custom options.prop file found in /sdcard"
+cp -f $EXTSDCARD/options.prop /tmp 2>/dev/null && echo_log "Custom options.prop file found in $EXTSDCARD"
+cp -f /usb-otg/options.prop /tmp 2>/dev/null && echo_log "Custom options.prop file found in /usb-otg"
+cp -f /usbstorage/options.prop /tmp 2>/dev/null && echo_log "Custom options.prop file found in /usbstorage"
+echo_log " "
+
+# Log previous firmware info
+echo_log "Previous firmware info:"
+echo_log "BL: $(getprop ro.boot.bootloader)"
+echo_log "ROM: $(get_prop ro.build.display.id || echo '<system_wiped>')"
+echo_log "TWRP: $(getprop ro.twrp.version || echo '<unknown_recovery>')"
+echo_log " "
+echo_log " "
+
+################ MAIN SCRIPT ##################
+
+echo_log "########### START INSTALLATION ###########"
+echo_log " "
+
+DESC="$BASEVERSION $ROMNAME $VERSION by $NAME"
+BAR=$(printf '%*s' "${#DESC}" | tr ' ' '=') # adaptive lenght
+
+ui_print " "
+ui_print "$BAR"
+ui_print "$DESC"
+ui_print "$BAR"
+ui_print " "
+ui_print "It may take several minutes, please wait..."
+ui_print " "
+
+# Detect settings specified in options.prop
+CSC=$(get_prop CSC /tmp/options.prop) || CSC=KCSC
+ROOT=$(get_prop root /tmp/options.prop) || ROOT=true
+XPOSED=$(get_prop xposed /tmp/options.prop) || XPOSED=auto
+
+# Ensure compatibility with older options.prop file
+if [ "$ROOT" = "magisk" ] || [ "$ROOT" = "supersu" ] ; then
+    ROOT=true
+elif [ "$ROOT" = "noroot" ] ; then
+    ROOT=false
+fi
+
+# Ensure boolean values in case of typo in options.prop
+if [ "$ROOT" != "true" ] && [ "$ROOT" != "false" ] ; then ROOT=true ; fi
+
+# Detect $ZIPNAME to read options correctly
+ZIPDIR="$(dirname "$ZIPFILE")//"
+ZIPNAME=$(echo "$ZIPFILE" | cut -c${#ZIPDIR}-)
+
+# Check if user would like to skip rooting
+echo "$ZIPNAME" | grep -i "noroot" >/dev/null && ROOT=false
+if (! $ROOT) ; then
+    ui_print "NOTE: ROM will be installed without root..."
+    ui_print " "
+fi
+
+# Encrypt existing /data at the next boot
+echo "$ZIPNAME" | grep -i "encrypt" >/dev/null
+if [ $? -eq 0 ] ; then
+    export KEEPFORCEENCRYPT=true
+    ui_print "NOTE: Data encryption has been forced..."
+    ui_print " "
+fi
+
+# Rescue your device in case of (probably) all bootloop reasons
+echo "$ZIPNAME" | grep -i "rescue" >/dev/null
+if [ $? -eq 0 ] ; then
+    XPOSED=false
+    EXTMODS=false
+    touch /cache/.disable_magisk
+    ui_print "NOTE: Rescue mode has been forced..."
+    ui_print " "
+else
+    EXTMODS=true
+    # Force / detect Xposed profile (ensure boolean value)
+    echo "$ZIPNAME" | grep -i "xposed" >/dev/null && XPOSED=true
+    if [ "$XPOSED" = "true" ] ; then
+        ui_print "NOTE: Xposed installation has been forced..."
+        ui_print " "
+    elif [ "$XPOSED" = "auto" ] && [ -f /system/xposed.prop ] ; then
+        if (! is_mounted /data) || [ ! -z "$(find /data/app -type d -name de.robv.android.xposed.installer* 2>/dev/null)" ] ; then
+            XPOSED=true
+            ui_print "NOTE: Xposed profile has been detected..."
+            ui_print " "
+        else
+            XPOSED=false
+        fi
+    else
+        XPOSED=false
+    fi
+fi
+
+# Check if $ZIPNAME contains forced CSC
+echo "$ZIPNAME" | grep "^[A-Z][0-9A-Z][0-9A-Z]_" >/dev/null && CSC=$(echo "$ZIPNAME" | cut -c-3)
+if [ "$CSC" != "KCSC" ] ; then
+    ui_print "NOTE: CSC has been forced to $CSC..."
+    ui_print " "
+fi
+
+# Exit if we can't mount /system
+if (! is_mounted /system) ; then
+    ui_print "Failed! Can't mount /system, aborting!"
+    ui_print " "
+    abort
+fi
+
+# Exit if $ODM exists but we can't mount /odm
+if [ ! -z "$ODM" ] && (! is_mounted /odm) ; then
+    ui_print "Failed! Can't mount /odm, aborting!"
+    ui_print " "
+    abort
+fi
+
+# Allow to shorten bootloader prefix using "skipvc" option
+echo "$ZIPNAME" | grep -i "skipvc" >/dev/null
+if [ $? -eq 0 ] ; then
+    BLPREFIX=$(echo $BASEVERSION | cut -c-4)
+    FLASHCP=false
+    ui_print "NOTE: Variant check has been skipped..."
+    ui_print " "
+else
+    BLPREFIX=$(echo $BASEVERSION | cut -c-5)
+fi
+
+# Check device using bootloader prefix
+getprop ro.boot.bootloader | grep "^$BLPREFIX" >/dev/null
+if [ $? -ne 0 ] ; then
+    ui_print "This ROM is designed for $BLPREFIX, aborting!"
+    ui_print " "
+    abort
+fi
+
+unzip_file $NAME/csc/odm/omc/SW_Configuration.xml /tmp/ref_csclist.xml ||
+unzip_file $NAME/csc/system/omc/SW_Configuration.xml /tmp/ref_csclist.xml ||
+unzip_file $NAME/csc/system/SW_Configuration.xml /tmp/ref_csclist.xml
+if [ "$CSC" != "KCSC" ] && [ -z "$(cat /tmp/ref_csclist.xml | grep "/$CSC/")" ] ; then
+    ui_print "Forced CSC is not supported!"
+    CSC=KCSC
+fi
+
+if [ "$CSC" = "KCSC" ] ; then
+    ui_print "Checking current CSC..."
+    detect_csc /tmp/ref_csclist.xml
+    case $? in
+        1)  ui_print "Failed! Installer will use $ERR_CSC..."
+            ui_print " "
+            sleep 3
+        ;;
+        2)  ui_print "Failed! Detected CSC is not supported!"
+            ui_print "Force a supported CSC and then try again."
+            ui_print "Aborting, no changes have been made..."
+            ui_print " "
+            sleep 3
+            abort
+        ;;
+        3)  ui_print "Failed! Can't detect CSC!"
+            ui_print "Aborting, no changes have been made..."
+            ui_print " "
+            sleep 3
+            abort
+        ;;
+        *)
+    esac
+fi
+
+if [ "$CSC" = "KCSC" ] ; then
+    if [ -z "$ODM" ] ; then ui_print "Backing up current CSC pack..." ; fi
+    kcsc_backup /tmp/kcsc || ui_print "Failed! CSC related content not found..."
+fi
+
+efs_backup && ui_print "Backing up EFS to $TARGET..." || ui_print "Backing up EFS... Failed!"
+
+ui_print "Installing system, please wait..."
+umount /system
+if [ $? -ne 0 ] ; then
+    ui_print " "
+    ui_print "Failed! /system is busy, aborting!"
+    ui_print " "
+    abort
+fi
+unzip_flash $NAME/images/system.img $SYSTEM || ui_print "Failed to flash system.img -> $SYSTEM"
+mount /system
+(! is_mounted /system) && mount -t ext4 $SYSTEM /system
+if (! is_mounted /system) ; then
+    ui_print " "
+    ui_print "Failed! Can't mount new /system, aborting!"
+    ui_print " "
+    abort
+fi
+
+if [ ! -z "$VENDOR" ] ; then
+    ui_print "Installing vendor, please wait..."
+    (is_mounted /vendor) && umount /vendor
+    if (is_mounted /vendor) ; then
+        ui_print " "
+        ui_print "Failed! /vendor is busy, aborting!"
+        ui_print " "
+        abort
+    fi
+    unzip_flash $NAME/images/vendor.img $VENDOR || ui_print "Failed to flash vendor.img -> $VENDOR"
+    mount /vendor
+    (! is_mounted /vendor) && mount -t ext4 $VENDOR /vendor
+    if (! is_mounted /vendor) ; then
+        ui_print " "
+        ui_print "Failed! Can't mount new /vendor, aborting!"
+        ui_print " "
+        abort
+    fi
+fi
+
+# Optional images (update if file exists in $NAME/images)
+unzip_flash $NAME/images/dqmdbg.img $DQMDBG # may not exist
+unzip_flash $NAME/images/recovery.img $RECOVERY # optional
+
+# build.prop overrides & additions
+set_prop ro.build.display.id $NAME.$(get_prop ro.build.version.incremental)
+set_prop wlan.wfd.hdcp disable
+set_prop ro.config.tima 0
+set_prop ro.frp.pst
+
+# Fix for DRM protected content
+find -L /system -type f -name liboemcrypto.so | while read file ; do mv -f $file $file.bak ; done
+
+ui_print "Applying physical DeBloat..."
+physical_debloat || ui_print "Failed! File not found!"
+
+if [ "$CSC" = "KCSC" ] ; then
+    if [ -z "$ODM" ] ; then ui_print "Restoring current CSC pack..." ; fi
+    kcsc_restore /tmp/kcsc || ui_print "Failed! CSC backup not found..."
+else
+    ui_print "Installing CSC package & applying $CSC..."
+    unzip_dir $NAME/csc /tmp
+    set_csc $CSC /tmp/$NAME/csc
+    case $? in
+        1)  ui_print "Failed! CSC pack not found..."
+            ui_print " "
+            sleep 3
+        ;;
+        2)  ui_print "Failed! Not enough space..."
+            ui_print " "
+            sleep 3
+        ;;
+        3)  ui_print "Failed! Can't mount /efs..."
+            ui_print " "
+            sleep 3
+        ;;
+        *)
+    esac
+fi
+
+# Ignore apps placed in /preload (if exists)
+find /system/csc /system/etc /system/omc /odm/omc -type f -name hidden_apks_list.txt 2>/dev/null | while read file ; do
+    if [ -s $file ] ; then
+        echo -n "" > $file
+    fi
+done
+
+ui_print "Applying CSC feature MOD..."
+detect_cscpath || ui_print "Failed! CSC related content not found!"
+mod_csc
+case $? in
+    1)  ui_print "Failed! File not found!"
+        ui_print " "
+        sleep 3
+    ;;
+    2)  ui_print "Failed! XML file is encrypted!"
+        ui_print " "
+        sleep 3
+    ;;
+    *)
+esac
+
+ui_print "Applying virtual DeBloat..."
+virtual_debloat || ui_print "Failed! File not found!"
+
+unzip_dir $NAME/mods/system /tmp || mkdir -p /tmp/$NAME/mods/system
+($EXTMODS) && for STORAGE in $EXTSDCARD /usb-otg /usbstorage /sdcard ; do
+    cp -Rf $STORAGE/devbase/system/app /tmp/$NAME/mods/system 2>/dev/null
+    cp -Rf $STORAGE/devbase/system/etc /tmp/$NAME/mods/system 2>/dev/null
+    cp -Rf $STORAGE/devbase/system/fonts /tmp/$NAME/mods/system 2>/dev/null
+    cp -Rf $STORAGE/devbase/system/framework /tmp/$NAME/mods/system 2>/dev/null
+    cp -Rf $STORAGE/devbase/system/media /tmp/$NAME/mods/system 2>/dev/null
+    cp -Rf $STORAGE/devbase/system/priv-app /tmp/$NAME/mods/system 2>/dev/null
+    cp -Rf $STORAGE/devbase/system/usr /tmp/$NAME/mods/system 2>/dev/null
+done
+if [ ! -z "$(find /tmp/$NAME/mods/system -type f 2>/dev/null)" ] ; then
+    ui_print "Installing MODs to system..."
+    chown -R 0:0 /tmp/$NAME/mods/system
+    chmod -R 644 /tmp/$NAME/mods/system
+    chmod -R +X /tmp/$NAME/mods/system
+    cd /tmp/$NAME/mods/system
+    for apkpath in `find *app -type d -mindepth 1 -maxdepth 1` ; do
+        # remove original app's directory, if exists (with odex/oat/etc..)
+        rm -Rf /system/$apkpath 
+    done
+    cp -af * /system
+    find * -type f | while read file ; do echo_log "ext_mods: /system/$file replaced/added" ; done
+    cd /
+fi
+
+if ($FLASHCP) ; then
+    ui_print "Installing baseband/modem..."
+    unzip_flash $NAME/images/modem.bin $MODEM || ui_print "Failed to flash modem.bin -> $MODEM"
+    if [ ! -z "$CPDEB" ] ; then
+        unzip_flash $NAME/images/modem_debug.bin $CPDEB || ui_print "Failed to flash modem_debug.bin -> $CPDEB"
+    fi
+fi
+
+ui_print "Installing stock kernel..."
+unzip_flash $NAME/images/boot.img $BOOT || ui_print "Failed to flash boot.img -> $BOOT"
+
+rmm_patcher && ui_print "Applying RMM lock prevention..."
+
+rm -Rf /cache/* /data/stock_boot*.*
+
+if ($ROOT) ; then
+    ui_print " "
+    unzip_install $NAME/magisk/magisk.zip || ui_print "Failed to install Magisk!"
+else
+    ui_print "Patching dm-verity..."
+    if [ -z "$KEEPFORCEENCRYPT" ] ; then
+        unzip_install $NAME/noverity/no-verity-opt-encrypt.zip
+    else
+        unzip_install $NAME/noverity/no-verity-force-encrypt.zip
+    fi || ui_print "Failed to patch dm-verity!"
+fi
+
+if ($XPOSED) ; then
+    ui_print " "
+    ui_print "Installing Xposed framework..."
+    unzip_install $NAME/xposed/xposed.zip || ui_print "Failed to install Xposed framework!"
+    if (is_mounted /data) && [ -z "$(find /data/app -type d -name de.robv.android.xposed.installer* 2>/dev/null)" ] ; then
+        mkdir -p /data/app/de.robv.android.xposed.installer-1
+        unzip_file $NAME/xposed/xposed.apk /data/app/de.robv.android.xposed.installer-1/base.apk
+        chown -R 1000:1000 /data/app
+        chmod 771 /data/app
+        chmod 755 /data/app/de.robv.android.xposed.installer-1
+        chmod 644 /data/app/de.robv.android.xposed.installer-1/base.apk
+        chcon -Rv u:object_r:apk_data_file:s0 /data/app >/dev/null
+    fi
+fi
+
+($EXTMODS) && for STORAGE in /sdcard /usbstorage /usb-otg $EXTSDCARD ; do
+    if [ -f $STORAGE/devbase/post-installation.sh ] ; then
+        ui_print " "
+        ui_print "Running custom post-installation.sh script..."
+        sh $STORAGE/devbase/post-installation.sh
+        break # run only one script
+    fi
+done
+
+export KEEPFORCEENCRYPT=
+
+ui_print " "
+ui_print "Wiping /data/dalvik-cache..."
+rm -Rf /data/dalvik-cache/*
+
+umount /system
+umount /vendor
+umount /odm
+
+ui_print " "
+ui_print "Installation complete"
+ui_print " "
+
+(is_mounted /data) && cp -f /tmp/devbase_install.log /data || cp -f /tmp/devbase_install.log /cache
+rm -Rf /tmp/*
+
+exit 0
