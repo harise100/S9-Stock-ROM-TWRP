@@ -1,0 +1,83 @@
+#
+# DevBase by ALEXNDR (_alexndr @ XDA)
+#
+# Configuration file to allow customize the installation.
+#
+# File inside the ZIP installer is just for reference - please DO NOT modify it!
+# If you want to change some options listed below - edit the copy of this file, then place
+# modified options.prop file in the root directory of internal emulated scdard (/data/media/0)
+# or in the root directory of extSdCard (recommended if you plan to format internal emulated
+# sdcard) and then start the installation.
+#
+# TIP: You do not need to repeat this step every next update I will release. As long as your
+# customized options.prop file is present in the (ext)SdCard - future DevBase installers will
+# "read in your mind" that you want to install with such options again.
+#
+# NOTE: All below variables and values are case sensitive!
+
+# Enable root access. Allowed values:
+# true - install Magisk as root solution (default)
+# false - do not root device
+
+root=true
+
+# Install Xposed framework matched to the ROM (there is also a possibility to detect Xposed profile
+# automatically, but auto-detection will not work if user will perform wipe /system). Allowed values:
+# auto - detect Xposed profile automatically
+# true - force Xposed framework installation
+# false - do not install Xposed framework
+
+xposed=auto
+
+# CSC Selection. Allowed values:
+# KCSC - Keep current CSC, recommended in most cases (automatic selection or keep current CSC contents).
+# You can force the use of natively supported CSC by typing (use UPPERCASE!): ACR, AFG, AFR, ATO, AUT, BGL,
+# BNG, BRI, BTC, BTU, CAC, CAM, CEL, CPW, DBT, DKR, ECT, EGY, EUR, GLB, ILO, INS, ITV, KSA, LAO, LUX, LYS,
+# MAT, MID, MM1, MWD, MYM, NEE, NPL, NZC, OPS, ORX, PAK, PCL, PHE, PHN, PNG, PTR, ROM, SEB, SEE, SEK, SIN,
+# SKZ, SLK, SMA, SMP, STH, TEB, TEL, THL, THR, TMC, TNZ, TPH, TUN, TUR, VAU, VFJ, VNZ, WTL, XEF, XEH, XEO,
+# XEU, XEZ, XFA, XFE, XME, XNX, XNZ, XSA, XSG, XSP, XTC, XXV
+
+CSC=KCSC
+
+# Custom CSC Features. Allowed value in each line: <Example_line>value</Example_line>
+
+<CscFeature_Common_SupportWcdmaInSlave>true</CscFeature_Common_SupportWcdmaInSlave>
+<CscFeature_VoiceCall_ConfigRecording>RecordingAllowed</CscFeature_VoiceCall_ConfigRecording>
+<CscFeature_Setting_EnableMenuBlockCallMsg>true</CscFeature_Setting_EnableMenuBlockCallMsg>
+<CscFeature_Setting_CustNetworkSelMenu4>LTEONLY</CscFeature_Setting_CustNetworkSelMenu4>
+<CscFeature_Setting_SupportRealTimeNetworkSpeed>true</CscFeature_Setting_SupportRealTimeNetworkSpeed>
+<CscFeature_SmartManager_ConfigSubFeatures>roguepopup|autoclean|autorestart|applock|trafficmanager</CscFeature_SmartManager_ConfigSubFeatures>
+<CscFeature_SmartManager_DisableAntiMalware>true</CscFeature_SmartManager_DisableAntiMalware>
+<CscFeature_SystemUI_SupportRecentAppProtection>true</CscFeature_SystemUI_SupportRecentAppProtection>
+<CscFeature_Message_DisplaySmsTimeAs>server</CscFeature_Message_DisplaySmsTimeAs>
+<CscFeature_Message_DisplayMmsTimeAs>server</CscFeature_Message_DisplayMmsTimeAs>
+<CscFeature_Camera_ShutterSoundMenu>true</CscFeature_Camera_ShutterSoundMenu>
+<CscFeature_RIL_ForceConnectMMS>true</CscFeature_RIL_ForceConnectMMS>
+
+# Custom physical debloat list. Allowed value in each line: path to app's directory in /system.
+# (NOTE: wildcards are allowed here)
+
+/system/*app/SamsungPass*
+/system/*app/SamsungPay*
+/system/*app/SecureFolder*
+/system/app/SecurityLogAgent
+/system/priv-app/Fast
+/system/priv-app/KnoxCore
+/system/priv-app/Rlc
+
+# Custom virtual debloat list. Allowed value in each line: exact app name with .apk extension.
+# (NOTE: without app's path/directory, wildcards are NOT allowed here!)
+
+Excel_SamsungStub.apk
+Facebook_stub.apk
+FBAppManager_NS.apk
+FBInstaller_NS.apk
+FBServices.apk
+FotaAgent.apk
+LinkedIn_SamsungStub.apk
+OneDrive_Samsung_v3.apk
+PowerPoint_SamsungStub.apk
+Word_SamsungStub.apk
+YahooEdgeFinance.apk
+YahooEdgeSports.apk
+My_Singtel_4.4_com.singtel.mysingtel.apk
